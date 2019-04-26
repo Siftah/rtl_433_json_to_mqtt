@@ -1,9 +1,7 @@
 #!/usr/local/bin/php
 <?php
 require_once('config.php');
-/*
- ./rtl_433 -F json:433mhz_log.json -M utc -M level -M newmodel -R 44 -R 68 -R 03 && tail -f 433mhz_log.json |php ./parser.php 
-*/
+
 $knownDevices = array();
 $devices = array();
 $lastLine = '';
@@ -15,18 +13,23 @@ function doDebug($device, $message){
 	}
 }
 
+function doMosquittoPub($topic, $payload) {
+	exec(CONFIG_MOSQUITTO_PUB.' -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.
+		' -t '.$topic.' -m "'.addslashes($payload).'"');
+}
+
 function doDiscovery($hash, $reason){
 	global $devices,$knownDevices;
 
 	if($knownDevices[$hash]['model']=="Prologue-TH"){
 			doDebug($devices[$hash]['name'], "Doing Discovery");
-			$topic1 = 'homeassistant/sensor/temp_'.$devices[$hash]['name'].'/config';
-			$payload1 = '{"device_class": "temperature", "name": "'.$devices[$hash]['name'].' Temperature", "state_topic": "homeassistant/sensor/'.$devices[$hash]['name'].'/state", "unit_of_measurement": "°C", "value_template": "{{value_json.temperature}}" }';
-			exec('/usr/local/bin/mosquitto_pub -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.' -t '.$topic1.' -m "'.addslashes($payload1).'"');
-			
-			$topic2 = 'homeassistant/sensor/hum_'.$devices[$hash]['name'].'/config';
-			$payload2 = '{"device_class": "humidity", "name": "'.$devices[$hash]['name'].' Humidity", "state_topic": "homeassistant/sensor/'.$devices[$hash]['name'].'/state", "unit_of_measurement": "%", "value_template": "{{value_json.humidity}}" }';
-			exec('/usr/local/bin/mosquitto_pub -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.' -t '.$topic2.' -m "'.addslashes($payload2).'"');
+			$topic = 'homeassistant/sensor/temp_'.$devices[$hash]['name'].'/config';
+			$payload = '{"device_class": "temperature", "name": "'.$devices[$hash]['name'].' Temperature", "state_topic": "homeassistant/sensor/'.$devices[$hash]['name'].'/state", "unit_of_measurement": "°C", "value_template": "{{value_json.temperature}}" }';
+			doMosquittoPub($topic, $payload);
+
+			$topic = 'homeassistant/sensor/hum_'.$devices[$hash]['name'].'/config';
+			$payload = '{"device_class": "humidity", "name": "'.$devices[$hash]['name'].' Humidity", "state_topic": "homeassistant/sensor/'.$devices[$hash]['name'].'/state", "unit_of_measurement": "%", "value_template": "{{value_json.humidity}}" }';
+			doMosquittoPub($topic, $payload);
 	}
 }
 
@@ -36,20 +39,26 @@ function doUpdate($hash){
 	if(@$knownDevices[$hash]['model']=="Prologue-TH"){
 		$topic = 'homeassistant/sensor/'.$devices[$hash]['name'].'/state';
 		$payload = '{ "temperature": "'.$devices[$hash]['temperature'].'", "humidity": "'.$devices["$hash"]['humidity'].'" }';
-		exec('/usr/local/bin/mosquitto_pub -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.' -t '.$topic.' -m "'.addslashes($payload).'"');
 		doDebug($devices[$hash]['name'], "Temperature: {$devices[$hash]['temperature']}, Humidity: {$devices[$hash]['humidity']}");
 	}
 
 	if(@$knownDevices[$hash]['model']=="Kerui-Security"){
-		exec('/usr/local/bin/mosquitto_pub -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.' -t homeassistant/motion/'.$devices[$hash]['name'].' -m "ON"');
-		doDebug($devices[$hash]['name'], "Motion Detected");
+		if($knownDevices[$hash]['model']=='motion'){//usually motion, but seems to be other things caught by this.
+			$topic='homeassistant/motion/'.$devices[$hash]['name'];
+			$payload='ON';
+			doDebug($devices[$hash]['name'], "Motion Detected");
+		} else {//anything else handle as a button
+			$topic='homeassistant/binary_sensor/'.$devices[$hash]['name'];
+			$payload=$devices[$hash]['state'];
+		}
 	}
 
 	if(@$knownDevices[$hash]['model']=="CurrentCost-TX"){
-		exec('/usr/local/bin/mosquitto_pub -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.' -t homeassistant/power/'.$devices[$hash]['name'].' -m "'.$devices[$hash]['power0'].'"');
+		$topic='homeassistant/power/'.$devices[$hash]['name'];
+		$payload=$devices[$hash]['power0'];
 		doDebug($devices[$hash]['name'], "{$devices[$hash]['power0']} watts");
 	}
-
+	doMosquittoPub(@$topic, @$payload);
 }
 
 function trackDevices($rfData){
@@ -69,6 +78,8 @@ function trackDevices($rfData){
 	if($rfData['model']=="Kerui-Security"){
 		$devices[$hash]= array(
 			'name' => $rfData['id'],
+			'state' => $rfData['state'],
+			'cmd' => $rfData['cmd'],
 			'lastUpdated'=> date('c')
 			);
 	}
@@ -100,7 +111,6 @@ while (false !== ($line = fgets(STDIN))) {
 	if($lastLine != $line){
 		$rfData=json_decode($line, true);
 		$knownDevices = trackDevices($rfData);
-		doUpdate($rfData);
 		$lastLine = $line;
 }
 }
