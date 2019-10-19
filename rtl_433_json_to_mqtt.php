@@ -1,6 +1,7 @@
-#!/usr/local/bin/php
+#!/usr/bin/php
 <?php
 require_once('config.php');
+//define('DEBUG',true);
 
 $knownDevices = array();
 $devices = array();
@@ -14,8 +15,7 @@ function doDebug($device, $message){
 }
 
 function doMosquittoPub($topic, $payload) {
-	exec(CONFIG_MOSQUITTO_PUB.' -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.
-		' -t '.$topic.' -m "'.addslashes($payload).'"');
+	exec(CONFIG_MOSQUITTO_PUB.' -h '.CONFIG_MQTT_HOST.' -u '.CONFIG_MQTT_USER.' -P '.CONFIG_MQTT_PASS.' -t '.$topic.' -m "'.addslashes($payload).'"');
 }
 
 function doDiscovery($hash, $reason){
@@ -38,32 +38,38 @@ function doUpdate($hash){
 	
 	if(@$knownDevices[$hash]['model']=="Prologue-TH"){
 		$topic = 'homeassistant/sensor/'.$devices[$hash]['name'].'/state';
-		$payload = '{ "temperature": "'.$devices[$hash]['temperature'].'", "humidity": "'.$devices["$hash"]['humidity'].'" }';
+		$payload = '{ "temperature": "'.$devices[$hash]['temperature'].'", "humidity": "'.$devices[$hash]['humidity'].'" }';
 		doDebug($devices[$hash]['name'], "Temperature: {$devices[$hash]['temperature']}, Humidity: {$devices[$hash]['humidity']}");
+		doMosquittoPub(@$topic, @$payload);
 	}
 
 	if(@$knownDevices[$hash]['model']=="Kerui-Security"){
-		if($knownDevices[$hash]['model']=='motion'){//usually motion, but seems to be other things caught by this.
-			$topic='homeassistant/motion/'.$devices[$hash]['name'];
-			$payload='ON';
+			//$topic='homeassistant/binary_sensor/'.$devices[$hash]['name'];
+			$topic='tele/sonoffbridge/RESULT';
+			$payload='{"RfReceived":{"Data":"'.$devices[$hash]['name'].'","RfKey":1}}';
 			doDebug($devices[$hash]['name'], "Motion Detected");
-		} else {//anything else handle as a button
-			$topic='homeassistant/binary_sensor/'.$devices[$hash]['name'];
-			$payload=$devices[$hash]['state'];
-		}
+			doMosquittoPub(@$topic, @$payload);
 	}
+
+	if(@$knownDevices[$hash]['model']=="Generic-Remote"){
+			$topic='tele/sonoffbridge/RESULT';
+			$payload='{"RfReceived":{"Data":"'.$devices[$hash]['name'].'","TriState":"'.$devices[$hash]['state'].'",Command":"'.$devices[$hash]['cmd'].'"}}';
+			doDebug($devices[$hash]['name'], "Generic-Remote / Tristate Detected");
+			doMosquittoPub(@$topic, @$payload);
+	}
+
 
 	if(@$knownDevices[$hash]['model']=="CurrentCost-TX"){
 		$topic='homeassistant/power/'.$devices[$hash]['name'];
 		$payload=$devices[$hash]['power0'];
 		doDebug($devices[$hash]['name'], "{$devices[$hash]['power0']} watts");
+		doMosquittoPub(@$topic, @$payload);
 	}
-	doMosquittoPub(@$topic, @$payload);
 }
 
 function trackDevices($rfData){
 	global $knownDevices, $devices;
-	$hash=hash('md4', @$rfData['model'].@$rfData['subtype'].@$rfData['channel'].@$rfData['id'].@$rfData['code']);
+	$hash=hash('md4', @$rfData['model'].@$rfData['subtype'].@$rfData['channel'].@$rfData['id'].@$rfData['code'].@$rfData['tristate']);
 
 	if($rfData['model']=="Prologue-TH"){
 		$uniqueID = $rfData['channel'].'_'.$rfData['subtype'].'_'.$rfData['id'];
@@ -79,6 +85,15 @@ function trackDevices($rfData){
 		$devices[$hash]= array(
 			'name' => $rfData['id'],
 			'state' => $rfData['state'],
+			'cmd' => $rfData['cmd'],
+			'lastUpdated'=> date('c')
+			);
+	}
+
+	if($rfData['model']=="Generic-Remote"){
+		$devices[$hash]= array(
+			'name' => $rfData['id'].'_'.$rfData['cmd'].'_'.$rfData['tristate'],
+			'state' => $rfData['tristate'],
 			'cmd' => $rfData['cmd'],
 			'lastUpdated'=> date('c')
 			);
